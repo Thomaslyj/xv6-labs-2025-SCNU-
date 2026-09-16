@@ -61,5 +61,41 @@ void
 memdump(char *fmt, char *data)
 {
   // Your code here.
+for(int i = 0; fmt[i]; i++){
+ switch(fmt[i]){
+ case 'i':
+ printf("%d\n", *(int *)data);
+ data += 4;
+ break;
+ // TODO: 'p' 'h' 'c' 's' 'S'
+  case'p':
+  printf("%lx\n", *(uint64 *)data);
+  data+=8;
+  break;
+  case'h':
+  printf("%d\n",*(short*)data);
+  data+=2;
+  break;
+  case'c':
+  printf("%c\n",*data);
+  data+=1;
+  break;
+  case's':
+  printf("%s\n",*(char**)data);
+  data+=8;
+  break;
+  case'S':
+      // data当前位置就是字符串内容。
+      // S消耗剩余所有数据，所以打印后直接结束。
+      printf("%s\n", data);
+      return;
+
+  default:
+      fprintf(2, "memdump: unknown format '%c'\n", fmt[i]);
+      return;
+
+ }
+ }
+
 
 }

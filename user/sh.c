@@ -3,6 +3,7 @@
 #include "kernel/types.h"
 #include "user/user.h"
 #include "kernel/fcntl.h"
+#include "kernel/stat.h"
 
 // Parsed command representation
 #define EXEC  1
@@ -12,6 +13,14 @@
 #define BACK  5
 
 #define MAXARGS 10
+#define HISTORY_SIZE 16
+#define COMMAND_SIZE 100
+
+// 保存最近的 16 条命令。
+static char history[HISTORY_SIZE][COMMAND_SIZE];
+
+// 从 Shell 启动以来，一共保存了多少条命令。
+static int history_count = 0;
 
 struct cmd {
   int type;
@@ -53,7 +62,8 @@ int fork1(void);  // Fork but panics on failure.
 void panic(char*);
 struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
-
+// 1 表示交互式终端，0 表示从脚本读取命令。
+static int interactive;
 // Execute cmd.  Never returns.
 void
 runcmd(struct cmd *cmd)
@@ -134,12 +144,61 @@ runcmd(struct cmd *cmd)
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  // 只有用户在终端中输入命令时才显示 "$ "。
+  if(interactive)
+    write(2, "$ ", 2);
+
   memset(buf, 0, nbuf);
   gets(buf, nbuf);
-  if(buf[0] == 0) // EOF
+
+  if(buf[0] == 0)
     return -1;
+
   return 0;
+}
+
+// 保存一条命令，不保存结尾的换行符。
+static void
+savehistory(char *cmd)
+{
+  int i;
+  int slot;
+
+  slot = history_count % HISTORY_SIZE;
+
+  for(i = 0;
+      cmd[i] != '\0' &&
+      cmd[i] != '\n' &&
+      cmd[i] != '\r' &&
+      i < COMMAND_SIZE - 1;
+      i++){
+    history[slot][i] = cmd[i];
+  }
+
+  history[slot][i] = '\0';
+
+  // 空命令不计入历史。
+  if(i > 0)
+    history_count++;
+}
+
+static void
+printhistory(void)
+{
+  int first;
+  int i;
+
+  // 超过16条后，只显示最近16条。
+  first = history_count - HISTORY_SIZE;
+
+  if(first < 0)
+    first = 0;
+
+  for(i = first; i < history_count; i++){
+    printf("%d %s\n",
+           i + 1,
+           history[i % HISTORY_SIZE]);
+  }
 }
 
 int
@@ -147,7 +206,7 @@ main(void)
 {
   static char buf[100];
   int fd;
-
+  struct stat st;
   // Ensure that three file descriptors are open.
   while((fd = open("console", O_RDWR)) >= 0){
     if(fd >= 3){
@@ -155,26 +214,61 @@ main(void)
       break;
     }
   }
-
+    // 文件描述符 0 是标准输入。
+  // 控制台输入是 T_DEVICE，脚本输入是 T_FILE。
+  if(fstat(0, &st) == 0 && st.type == T_DEVICE)
+    interactive = 1;
+  else
+    interactive = 0;
+  
   // Read and run input commands.
-  while(getcmd(buf, sizeof(buf)) >= 0){
-    char *cmd = buf;
-    while (*cmd == ' ' || *cmd == '\t')
-      cmd++;
-    if (*cmd == '\n') // is a blank command
-      continue;
-    if(cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      cmd[strlen(cmd)-1] = 0;  // chop \n
-      if(chdir(cmd+3) < 0)
-        fprintf(2, "cannot cd %s\n", cmd+3);
-    } else {
-      if(fork1() == 0)
-        runcmd(parsecmd(cmd));
-      wait(0);
-    }
+while(getcmd(buf, sizeof(buf)) >= 0){
+  char *cmd = buf;
+
+  // 跳过命令开头的空格和 Tab。
+  while(*cmd == ' ' || *cmd == '\t')
+    cmd++;
+
+  // 空命令直接忽略。
+  if(*cmd == '\n' || *cmd == '\0')
+    continue;
+
+  /*
+   * history 必须由 Shell 自己处理。
+   * 文件系统里没有名为 history 的用户程序，
+   * 所以不能交给 exec()。
+   */
+  if(strcmp(cmd, "history\n") == 0 ||
+     strcmp(cmd, "history\r") == 0 ||
+     strcmp(cmd, "history") == 0){
+    printhistory();
+    continue;
   }
-  exit(0);
+
+  /*
+   * 必须在 parsecmd() 前保存。
+   * parsecmd() 会修改 cmd 指向的字符串。
+   */
+  savehistory(cmd);
+
+  if(cmd[0] == 'c' &&
+     cmd[1] == 'd' &&
+     cmd[2] == ' '){
+
+    // 去掉最后的换行符。
+    cmd[strlen(cmd) - 1] = 0;
+
+    if(chdir(cmd + 3) < 0)
+      fprintf(2, "cannot cd %s\n", cmd + 3);
+
+  } else {
+    if(fork1() == 0)
+      runcmd(parsecmd(cmd));
+
+    wait(0);
+  }
+}
+exit(0);
 }
 
 void
