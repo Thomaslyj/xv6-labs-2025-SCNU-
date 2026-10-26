@@ -1,0 +1,29 @@
+1. Looking at the backtrace output, which function called syscall?
+
+The function usertrap() called syscall(). A user program executes ecall to enter the kernel. After uservec saves the user registers, control is transferred to usertrap(), which identifies the trap as a system call and calls syscall().
+
+2. What is the value of p->trapframe->a7, and what does it represent?
+
+The value of p->trapframe->a7 is 0xf, which is decimal 15. It represents the system call number SYS_open. In the 2025 version of xv6, the first user program is init, and its first system call is open("console", O_RDWR).
+
+3. What was the previous mode of the CPU?
+
+The previous CPU mode was User mode. The SPP bit, bit 8 of the sstatus register, was 0, which means that the trap entered supervisor mode from user mode.
+
+4. At which assembly instruction did the kernel panic? Which register corresponded to num?
+
+The faulting instruction at sepc 0x80001d10 was:
+
+    lw a3,0(zero)
+
+The register corresponding to the variable num was a3. This instruction attempted to load an integer from virtual address 0.
+
+5. Why did the kernel crash?
+
+The statement num = *(int *)0 attempted to read from virtual address 0. Address 0 is not mapped in the xv6 kernel page table, so the CPU generated a load page fault. The value scause=0xd indicates a load page fault, and stval=0x0 indicates that the faulting virtual address was 0. Since this exception occurred in kernel mode, kerneltrap() called panic().
+
+When GDB stopped immediately before the faulting lw instruction, scause was still 0x8 because the lw instruction had not executed yet. That value represented the earlier user-mode ecall that entered the kernel.
+
+6. Which process was running when the kernel panicked, and what was its PID?
+
+The process was init, and its PID was 1.

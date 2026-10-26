@@ -275,8 +275,12 @@ kfork(void)
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
-
+  // sandbox constrain
+  np->mask = p->mask;
   // Cause fork to return 0 in the child.
+  safestrcpy(np->allowed_path,
+           p->allowed_path,
+           sizeof(np->allowed_path));
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
