@@ -22,14 +22,33 @@ struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
+// Reserve the last 32 MiB for sixteen 2 MiB pages.
+#define SUPERBASE (PHYSTOP - 16UL * SUPERPGSIZE)
+
+static struct {
+  struct spinlock lock;
+  struct run *freelist;
+} supermem;
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
-}
+  initlock(&supermem.lock, "supermem");
 
+  if(SUPERBASE % SUPERPGSIZE != 0 ||
+     (uint64)end >= SUPERBASE)
+    panic("super pool layout");
+
+  // Ordinary pages use only memory below SUPERBASE.
+  freerange(end, (void *)SUPERBASE);
+
+  // Superpages use the remaining 32 MiB.
+  for(uint64 pa = SUPERBASE;
+      pa + SUPERPGSIZE <= PHYSTOP;
+      pa += SUPERPGSIZE)
+    superfree((void *)pa);
+}
 void
 freerange(void *pa_start, void *pa_end)
 {
@@ -48,7 +67,9 @@ kfree(void *pa)
 {
   struct run *r;
 
-  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+  if(((uint64)pa % PGSIZE) != 0 ||
+     (char *)pa < end ||
+     (uint64)pa >= SUPERBASE)
     panic("kfree");
 
   // Fill with junk to catch dangling refs.
@@ -79,4 +100,42 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+// Return one 2 MiB page to the superpage pool.
+void
+superfree(void *pa)
+{
+  uint64 addr = (uint64)pa;
+
+  if(addr % SUPERPGSIZE != 0 ||
+     addr < SUPERBASE ||
+     addr >= PHYSTOP)
+    panic("superfree");
+
+  memset(pa, 1, SUPERPGSIZE);
+
+  struct run *r = (struct run *)pa;
+
+  acquire(&supermem.lock);
+  r->next = supermem.freelist;
+  supermem.freelist = r;
+  release(&supermem.lock);
+}
+
+// Allocate one 2 MiB page, or return 0 if none is available.
+void *
+superalloc(void)
+{
+  struct run *r;
+
+  acquire(&supermem.lock);
+  r = supermem.freelist;
+  if(r)
+    supermem.freelist = r->next;
+  release(&supermem.lock);
+
+  if(r)
+    memset((void *)r, 5, SUPERPGSIZE);
+
+  return (void *)r;
 }

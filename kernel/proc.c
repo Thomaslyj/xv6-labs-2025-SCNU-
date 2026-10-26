@@ -131,6 +131,14 @@ found:
     release(&p->lock);
     return 0;
   }
+    // Allocate and initialize the USYSCALL page.
+  if((p->usyscall = (struct usyscall *)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  memset(p->usyscall, 0, PGSIZE);
+  p->usyscall->pid = p->pid;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -161,6 +169,9 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->usyscall)
+    kfree((void *)p->usyscall);
+  p->usyscall = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -201,6 +212,14 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+    // Map USYSCALL as user-readable, without write or execute permission.
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+              (uint64)p->usyscall, PTE_R | PTE_U) < 0){
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  }
 
   return pagetable;
 }
@@ -212,6 +231,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -236,17 +256,36 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint64 sz;
   struct proc *p = myproc();
+  uint64 sz = p->sz;
 
-  sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+    uint64 newsz = sz + (uint64)n;
+
+    // Keep the heap below the special user mappings.
+    if(newsz < sz || newsz > USYSCALL)
       return -1;
-    }
+
+    uint64 result = uvmalloc(p->pagetable, sz, newsz, PTE_W);
+    if(result == 0)
+      return -1;
+
+    sz = result;
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uint64 amount = (uint64)(-(long)n);
+
+    if(amount > sz)
+      return 0;
+
+    uint64 newsz = sz - amount;
+    uint64 result = uvmdealloc(p->pagetable, sz, newsz);
+
+    if(result != newsz)
+      return -1;
+
+    sz = result;
   }
+
   p->sz = sz;
   return 0;
 }

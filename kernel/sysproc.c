@@ -140,3 +140,59 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+#ifdef LAB_PGTBL
+uint64
+sys_pgdirty(void)
+{
+  uint64 start;
+  uint64 usermask;
+  int npages;
+
+  argaddr(0, &start);
+  argint(1, &npages);
+  argaddr(2, &usermask);
+
+  struct proc *p = myproc();
+
+  if(npages < 1 || npages > 64)
+    return -1;
+
+  if(start % PGSIZE != 0)
+    return -1;
+
+  uint64 bytes = (uint64)npages * PGSIZE;
+
+  // Require a complete range inside ordinary process memory.
+  if(start >= MAXVA || bytes > MAXVA - start)
+    return -1;
+
+  if(start > p->sz || bytes > p->sz - start)
+    return -1;
+
+  uint64 mask = 0;
+
+  for(int i = 0; i < npages; i++){
+    uint64 va = start + (uint64)i * PGSIZE;
+    pte_t *pte = walk(p->pagetable, va, 0);
+
+    if(pte == 0)
+      continue;
+
+    if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      continue;
+
+    if(!PTE_LEAF(*pte))
+      continue;
+
+    if(*pte & PTE_D)
+      mask |= 1ULL << i;
+  }
+
+  if(copyout(p->pagetable, usermask,
+             (char *)&mask, sizeof(mask)) < 0)
+    return -1;
+
+  return 0;
+}
+#endif
