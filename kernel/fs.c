@@ -439,7 +439,49 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+// Convert bn to an index within the double-indirect region.
+  bn -= NINDIRECT;
 
+  if(bn < NINDIRECT * NINDIRECT){
+    // Allocate the double-indirect block when first needed.
+    if((addr = ip->addrs[NDIRECT + 1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT + 1] = addr;
+    }
+
+    // Find or allocate the required single-indirect block.
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    uint outer = bn / NINDIRECT;
+
+    if((addr = a[outer]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0){
+        brelse(bp);
+        return 0;
+      }
+      a[outer] = addr;
+      log_write(bp);
+    }
+    brelse(bp);
+
+    // Find or allocate the required data block.
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    uint inner = bn % NINDIRECT;
+
+    if((addr = a[inner]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[inner] = addr;
+        log_write(bp);
+      }
+    }
+    brelse(bp);
+    return addr;
+  }
   panic("bmap: out of range");
 }
 
@@ -470,7 +512,31 @@ itrunc(struct inode *ip)
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
+ // Free all blocks in the double-indirect region.
+  if(ip->addrs[NDIRECT + 1]){
+    struct buf *dbp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    uint *double_addrs = (uint*)dbp->data;
 
+    for(uint outer = 0; outer < NINDIRECT; outer++){
+      if(double_addrs[outer]){
+        struct buf *ibp = bread(ip->dev, double_addrs[outer]);
+        uint *single_addrs = (uint*)ibp->data;
+
+        // Free data blocks referenced by this single-indirect block.
+        for(uint inner = 0; inner < NINDIRECT; inner++){
+          if(single_addrs[inner])
+            bfree(ip->dev, single_addrs[inner]);
+        }
+
+        brelse(ibp);
+        bfree(ip->dev, double_addrs[outer]);
+      }
+    }
+
+    brelse(dbp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
+  }
   ip->size = 0;
   iupdate(ip);
 }
